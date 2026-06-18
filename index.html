@@ -454,18 +454,33 @@ async function fetchSheetTab(prodi) {
     if (!json.table) throw new Error("Response gviz tanpa tabel");
     const rows = json.table.rows || [];
 
-    // --- 1. Cari baris HEADER tabel detail (kolom pertama = "NO") ---
-    let headerRowIdx = -1;
-    for (let i = 0; i < rows.length; i++) {
-      const c0 = (cellVal((rows[i].c || [])[0]) + "").trim().toUpperCase();
-      if (c0 === "NO") { headerRowIdx = i; break; }
+    // --- 1. Cari baris HEADER detail TANPA andelin "NO" ---
+    // gviz suka nge-null teks "NO" karena kolom itu ke-type angka. Jadi kita cari
+    // baris yg ngandung kolom TEKS yg pasti aman: "mata kuliah" / "progres nilai".
+    const lc = x => (x + "").toLowerCase();
+    let headerCells = null;
+    let detailRowsRaw = [];
+
+    // Opsi A: gviz nempatin header detail sbg LABEL kolom (cols)
+    const colLabels = (json.table.cols || []).map(col => lc(col.label || ""));
+    const colsIsHeader = colLabels.some(l => l.includes("mata kuliah") || l.includes("progres nilai"));
+
+    if (colsIsHeader) {
+      headerCells = colLabels;
+      detailRowsRaw = rows; // semua rows = data
+    } else {
+      // Opsi B: header detail ada di salah satu baris data -> cari by kata kunci teks
+      let headerRowIdx = -1;
+      for (let i = 0; i < rows.length; i++) {
+        const joined = (rows[i].c || []).map(c => lc(cellVal(c))).join("|");
+        if (joined.includes("mata kuliah") || joined.includes("progres nilai")) { headerRowIdx = i; break; }
+      }
+      if (headerRowIdx === -1) throw new Error("Baris header tidak ditemukan di tab " + prodi.tab);
+      headerCells = (rows[headerRowIdx].c || []).map(c => lc(cellVal(c)).trim());
+      detailRowsRaw = rows.slice(headerRowIdx + 1);
     }
-    if (headerRowIdx === -1) throw new Error("Header 'NO' tidak ditemukan di tab " + prodi.tab);
 
     // --- 2. Petakan kolom BERDASARKAN NAMA HEADER (anti kolom ke-geser) ---
-    // Tab tertentu (Geologi, Elektro, TRIL) punya 2 kolom dosen -> index geser.
-    // Jadi kita cari index kolom by isi header, bukan angka tetap.
-    const headerCells = (rows[headerRowIdx].c || []).map(c => (cellVal(c) + "").trim().toLowerCase());
     const findCol = (...keywords) => {
       for (let i = 0; i < headerCells.length; i++) {
         if (keywords.some(k => headerCells[i].includes(k))) return i;
@@ -483,8 +498,7 @@ async function fetchSheetTab(prodi) {
     const idxSyncMhs = findCol("syncron nilai", "sync nilai");
     const idxKet     = findCol("ket");
 
-    // --- 3. Ambil semua DETAIL ROW (setelah header) ---
-    const detailRowsRaw = rows.slice(headerRowIdx + 1);
+    // --- 3. Ambil semua DETAIL ROW ---
     const detailRows = [];
     detailRowsRaw.forEach(r => {
       const c = r.c || [];
@@ -559,28 +573,36 @@ async function fetchSheetTab(prodi) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Coba fetch 1 tab, ulang sampai N kali kalau gagal (atasi rate-limit gviz sementara)
-async function fetchSheetTabWithRetry(prodi, retries = 2) {
+async function fetchSheetTabWithRetry(prodi, retries = 3) {
+  let last = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const result = await fetchSheetTab(prodi);
-    if (result.ok) return result;
-    if (attempt < retries) {
-      await sleep(600 * (attempt + 1)); // backoff: 600ms, 1200ms
-    } else {
-      console.warn(`Tab "${prodi.tab}" gagal setelah ${retries + 1}x:`, result.errorMsg);
-    }
+    last = await fetchSheetTab(prodi);
+    if (last.ok) return last;
+    if (attempt < retries) await sleep(700 * (attempt + 1)); // backoff 700/1400/2100ms
   }
-  return await fetchSheetTab(prodi); // hasil terakhir (ok:false) buat ditampilkan
+  console.warn(`Tab "${prodi.tab}" gagal:`, last.errorMsg);
+  return last;
 }
 
-// Fetch SEMUA tab tapi BERTAHAP (batch kecil) biar gviz nggak nolak karena kebanyakan
-// request paralel. Ini kunci fix "gagal memuat tab".
-async function fetchAllTabsBatched(list, batchSize = 3, gap = 350) {
+// Fetch SEMUA tab SATU-PER-SATU (sekuensial) biar gviz nggak nolak karena kebanyakan
+// request barengan. Lebih lambat dikit tapi jauh lebih akurat. Tab gede (Sipil) aman.
+async function fetchAllTabsBatched(list, gap = 300) {
   const out = [];
-  for (let i = 0; i < list.length; i += batchSize) {
-    const batch = list.slice(i, i + batchSize);
-    const res = await Promise.all(batch.map(p => fetchSheetTabWithRetry(p)));
-    out.push(...res);
-    if (i + batchSize < list.length) await sleep(gap); // jeda antar batch
+  for (let i = 0; i < list.length; i++) {
+    out.push(await fetchSheetTabWithRetry(list[i]));
+    if (i < list.length - 1) await sleep(gap);
+  }
+
+  // --- BABAK PENYELAMATAN: tab yg masih gagal dicoba lagi pelan-pelan di akhir ---
+  const failedIdx = out.map((r, i) => (!r.ok ? i : -1)).filter(i => i >= 0);
+  if (failedIdx.length) {
+    console.warn(`Rescue pass untuk ${failedIdx.length} tab gagal...`);
+    await sleep(1500);
+    for (const i of failedIdx) {
+      const retry = await fetchSheetTabWithRetry(list[i], 4);
+      if (retry.ok) out[i] = retry;
+      await sleep(500);
+    }
   }
   return out;
 }
