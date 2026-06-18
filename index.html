@@ -462,18 +462,21 @@ async function fetchSheetTab(prodi) {
     let detailRowsRaw = [];
 
     // Opsi A: gviz nempatin header detail sbg LABEL kolom (cols)
+    // Kunci HARUS "mata kuliah" doang. Jangan "progres nilai" -> baris REKAP di atas
+    // juga punya "Rekap Progres Nilai di SIGA" & bikin salah lock.
     const colLabels = (json.table.cols || []).map(col => lc(col.label || ""));
-    const colsIsHeader = colLabels.some(l => l.includes("mata kuliah") || l.includes("progres nilai"));
+    const colsIsHeader = colLabels.some(l => l.includes("mata kuliah"));
 
     if (colsIsHeader) {
       headerCells = colLabels;
       detailRowsRaw = rows; // semua rows = data
     } else {
-      // Opsi B: header detail ada di salah satu baris data -> cari by kata kunci teks
+      // Opsi B: header detail ada di salah satu baris data -> cari by "mata kuliah".
+      // (JANGAN pakai "progres nilai": baris rekap di atas juga punya & ke-detect duluan)
       let headerRowIdx = -1;
       for (let i = 0; i < rows.length; i++) {
         const joined = (rows[i].c || []).map(c => lc(cellVal(c))).join("|");
-        if (joined.includes("mata kuliah") || joined.includes("progres nilai")) { headerRowIdx = i; break; }
+        if (joined.includes("mata kuliah")) { headerRowIdx = i; break; }
       }
       if (headerRowIdx === -1) throw new Error("Baris header tidak ditemukan di tab " + prodi.tab);
       headerCells = (rows[headerRowIdx].c || []).map(c => lc(cellVal(c)).trim());
