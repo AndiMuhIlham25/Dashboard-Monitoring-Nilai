@@ -355,6 +355,7 @@
         <button class="filter-chip active" data-filter="all" onclick="setProdiFilter('all', this)">Semua</button>
         <button class="filter-chip" data-filter="s1" onclick="setProdiFilter('s1', this)">S1</button>
         <button class="filter-chip" data-filter="d4" onclick="setProdiFilter('d4', this)">D4</button>
+        <button class="filter-chip" data-filter="s2" onclick="setProdiFilter('s2', this)">S2</button>
       </div>
     </div>
     <div id="prodiTableContainer">
@@ -399,6 +400,11 @@ const PRODI_LIST = [
   { tab: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan",            nama: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan",        kategori: "d4" },
   { tab: "D4 Teknologi Rekayasa Manufaktur",              nama: "D4 Teknologi Rekayasa Manufaktur",                           kategori: "d4" },
   { tab: "D4 Teknologi Rekayasa Listrik",             nama: "D4 Teknologi Rekayasa Instalasi Listrik",                    kategori: "d4" },
+  { tab: "S1 PSDKU Touna",        nama: "S1 PSDKU Touna",                                            kategori: "s1" },
+  { tab: "S1 PSDKU Morowali",     nama: "S1 PSDKU Morowali",                                         kategori: "s1" },
+  { tab: "S2 Arsitektur",         nama: "S2 Arsitektur",                                             kategori: "s2" },
+  { tab: "S2 Teknologi Informasi", nama: "S2 Teknologi Informasi",                                   kategori: "s2" },
+  { tab: "S2 Sipil",              nama: "S2 Teknik Sipil",                                           kategori: "s2" },
 ];
 
 let allProdiData = [];   // hasil rekap per prodi
@@ -494,12 +500,24 @@ async function fetchSheetTab(prodi) {
     const idxKode    = findCol("kode");
     const idxMatkul  = findCol("mata kuliah", "matkul");
     const idxKelas   = findCol("smstr", "kls", "kelas");
-    const idxPeserta = findCol("jumlah peserta", "peserta");
     const idxDosen   = findCol("tim dosen", "dosen");        // ambil dosen pertama yg ketemu
     const idxStatus  = findCol("progres nilai");             // <- kunci: cari "Progres Nilai di SIGA"
-    const idxSyncAkm = findCol("syncron akm", "sync akm");
-    const idxSyncMhs = findCol("syncron nilai", "sync nilai");
-    const idxKet     = findCol("ket");
+
+    // KOLOM RAWAN: header kolom angka/boolean (Jumlah Peserta, Syncron) suka di-NULL
+    // sama gviz karena kolomnya ke-type number/boolean -> findCol gagal. Solusinya:
+    // tentuin posisinya relatif ke kolom yg header-nya PASTI selamat (teks):
+    //   Peserta = tepat setelah Kelas ; Syncron/Ket = tepat setelah Status.
+    let idxPeserta = findCol("jumlah peserta", "peserta");
+    if (idxPeserta < 0 && idxKelas >= 0) idxPeserta = idxKelas + 1;
+
+    let idxSyncAkm = findCol("syncron akm", "sync akm");
+    if (idxSyncAkm < 0 && idxStatus >= 0) idxSyncAkm = idxStatus + 1;
+
+    let idxSyncMhs = findCol("syncron nilai", "sync nilai");
+    if (idxSyncMhs < 0 && idxStatus >= 0) idxSyncMhs = idxStatus + 2;
+
+    let idxKet = findCol("ket");
+    if (idxKet < 0 && idxStatus >= 0) idxKet = idxStatus + 3;
 
     // --- 3. Ambil semua DETAIL ROW ---
     const detailRows = [];
@@ -799,7 +817,7 @@ function renderDetailTable() {
       <td>${r.kode || "-"}</td>
       <td>${r.matkul || "-"}</td>
       <td>${r.kelas || "-"}</td>
-      <td>${r.jumlahPeserta || "-"}</td>
+      <td>${(r.jumlahPeserta !== "" && r.jumlahPeserta != null) ? r.jumlahPeserta : "-"}</td>
       <td>${r.dosen || "-"}</td>
       <td>${statusBadge(r.statusNilai)}</td>
       <td class="checkbox-cell">${checkMark(r.syncAkm)}</td>
