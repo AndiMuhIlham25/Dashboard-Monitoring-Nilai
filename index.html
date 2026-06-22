@@ -418,7 +418,7 @@ const PRODI_LIST = [
   { tab: "S1 Elektro",          nama: "S1 Teknik Elektro",                                          kategori: "s1" },
   { tab: "S1 Informatika",      nama: "S1 Informatika",                                             kategori: "s1" },
   { tab: "S1 Sistem Informasi", nama: "S1 Sistem Informasi",                                        kategori: "s1" },
-  { tab: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan",            nama: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan",        kategori: "d4" },
+  { tab: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan", gid: "1377976891", nama: "D4 Teknologi Rekayasa Konstruksi Jalan dan Jembatan",        kategori: "d4" },
   { tab: "D4 Teknologi Rekayasa Manufaktur",              nama: "D4 Teknologi Rekayasa Manufaktur",                           kategori: "d4" },
   { tab: "D4 Teknologi Rekayasa Listrik",             nama: "D4 Teknologi Rekayasa Instalasi Listrik",                    kategori: "d4" },
   { tab: "S1 PSDKU Touna",        nama: "S1 PSDKU Touna",                                            kategori: "s1" },
@@ -434,8 +434,13 @@ let currentProdiFilter = "all";
 let currentDetailProdi = null;
 let sortState = { key: null, dir: 1 };
 
-function gvizUrl(sheetName) {
-  const encoded = encodeURIComponent(sheetName);
+function gvizUrl(prodi) {
+  // Prioritas pakai gid kalau ada, karena nama tab sering beda sedikit dan bikin data ngawur.
+  // Kalau gid tidak ada, fallback ke nama tab.
+  if (prodi && prodi.gid) {
+    return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${prodi.gid}&_=${Date.now()}`;
+  }
+  const encoded = encodeURIComponent(prodi.tab || prodi);
   // &_=timestamp = cache-buster, memaksa ambil data terbaru (bukan versi cache)
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encoded}&_=${Date.now()}`;
 }
@@ -467,9 +472,67 @@ function cellVal(cell) {
   return (cell.v !== undefined && cell.v !== null) ? cell.v : (cell.f || "");
 }
 
+function normalizeStatusNilai(status) {
+  const raw = (status || "")
+    .toString()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Compact bikin variasi "Belum ter input", "Belum Terinput", "belum-input" tetap kebaca.
+  const compact = raw.replace(/[^a-z0-9]/g, "");
+
+  if (
+    compact.includes("sudahterinput") ||
+    compact.includes("sudahdiinput") ||
+    compact.includes("sudahinput") ||
+    compact === "sudah"
+  ) return "sudah";
+
+  if (
+    compact.includes("belumterinput") ||
+    compact.includes("belumdiinput") ||
+    compact.includes("beluminput") ||
+    compact.includes("belomterinput") ||
+    compact.includes("belominput") ||
+    compact.includes("blmterinput") ||
+    compact.includes("blminput") ||
+    compact.includes("belmterinput") ||
+    compact.includes("belminput")
+  ) return "belum";
+
+  if (
+    compact.includes("belumlengkap") ||
+    compact.includes("belomlengkap") ||
+    compact.includes("blmlengkap") ||
+    compact.includes("belmlengkap") ||
+    compact.includes("tidaklengkap")
+  ) return "belumLengkap";
+
+  if (
+    compact === "t" ||
+    compact.includes("nilait") ||
+    compact.includes("nilaitunda")
+  ) return "nilaiT";
+
+  return "";
+}
+
+function labelStatusNilai(status) {
+  const key = normalizeStatusNilai(status);
+  if (key === "sudah") return "Sudah Terinput";
+  if (key === "belum") return "Belum Terinput";
+  if (key === "belumLengkap") return "Belum Lengkap";
+  if (key === "nilaiT") return "Nilai T";
+  return (status || "").toString().trim();
+}
+
 async function fetchSheetTab(prodi) {
   try {
-    const res = await fetch(gvizUrl(prodi.tab), { cache: "no-store" });
+    const res = await fetch(gvizUrl(prodi), { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const text = await res.text();
     const json = parseGviz(text);
@@ -544,20 +607,42 @@ async function fetchSheetTab(prodi) {
     const detailRows = [];
     detailRowsRaw.forEach(r => {
       const c = r.c || [];
+      const kode   = idxKode   >= 0 ? cellVal(c[idxKode])   : "";
       const matkul = idxMatkul >= 0 ? cellVal(c[idxMatkul]) : "";
       const kelas  = idxKelas  >= 0 ? cellVal(c[idxKelas])  : "";
-      // skip baris bener-bener kosong
-      if ((matkul + "").trim() === "" && (kelas + "").trim() === "") return;
+
+      const kodeClean = (kode + "").trim();
+      const matkulClean = (matkul + "").trim();
+      const kelasClean = (kelas + "").trim();
+
+      // FIX penting:
+      // Jangan hitung baris kosong/template/dropdown.
+      // Baris dianggap valid kalau ada KODE atau NAMA MATA KULIAH.
+      if (!kodeClean && !matkulClean) return;
+
+      // Skip baris rekap/catatan/header ulang yang kadang ikut terbaca dari Sheets.
+      const matkulLower = matkulClean.toLowerCase();
+      if (
+        matkulLower.includes("mata kuliah") ||
+        matkulLower.includes("rekap") ||
+        matkulLower.includes("total") ||
+        matkulLower.includes("update data") ||
+        matkulLower.includes("pukul")
+      ) return;
+
+      const statusRaw = (idxStatus >= 0 ? cellVal(c[idxStatus]) + "" : "").trim();
+
       detailRows.push({
         no: cellVal(c[0]),
         tglUjian: idxTgl >= 0 ? cellVal(c[idxTgl]) : "",
-        kode: idxKode >= 0 ? cellVal(c[idxKode]) : "",
-        matkul: matkul,
+        kode: kodeClean,
+        matkul: matkulClean,
         prodi: prodi.nama,
-        kelas: kelas,
+        kelas: kelasClean,
         jumlahPeserta: idxPeserta >= 0 ? cellVal(c[idxPeserta]) : "",
         dosen: idxDosen >= 0 ? cellVal(c[idxDosen]) : "",
-        statusNilai: (idxStatus >= 0 ? cellVal(c[idxStatus]) + "" : "").trim(),
+        statusNilai: statusRaw,
+        statusKey: normalizeStatusNilai(statusRaw),
         syncAkm: idxSyncAkm >= 0 ? cellVal(c[idxSyncAkm]) : "",
         syncMhs: idxSyncMhs >= 0 ? cellVal(c[idxSyncMhs]) : "",
         ket: idxKet >= 0 ? cellVal(c[idxKet]) : "",
@@ -566,25 +651,29 @@ async function fetchSheetTab(prodi) {
 
     // --- 4. REKAP selalu dihitung ULANG dari detail row (BUKAN dari baris rekap statis) ---
     // Ini yang bikin dashboard SELALU ikut perubahan di sheet.
-    const norm = s => (s + "").toLowerCase().trim();
     const total = detailRows.length;
-    const sudah = detailRows.filter(r => norm(r.statusNilai) === "sudah terinput").length;
-    const belum = detailRows.filter(r => norm(r.statusNilai) === "belum terinput").length;
-    const belumLengkap = detailRows.filter(r => norm(r.statusNilai) === "belum lengkap").length;
-    const nilaiT = detailRows.filter(r => norm(r.statusNilai) === "nilai t" || norm(r.statusNilai) === "t").length;
+    const sudah = detailRows.filter(r => r.statusKey === "sudah").length;
+    const belum = detailRows.filter(r => r.statusKey === "belum").length;
+    const belumLengkap = detailRows.filter(r => r.statusKey === "belumLengkap").length;
+    const nilaiT = detailRows.filter(r => r.statusKey === "nilaiT").length;
     const pct = total > 0 ? (sudah / total) * 100 : 0;
 
     // --- 5. Tanggal "Update data" / "Pukul" dari baris atas sheet (kalau ada) ---
     let updateTgl = "", updatePukul = "";
     for (const r of rows) {
-      for (const cell of (r.c || [])) {
-        const s = (cellVal(cell) + "");
+      const cells = r.c || [];
+      for (let i = 0; i < cells.length; i++) {
+        const s = (cellVal(cells[i]) + "");
         const sl = s.toLowerCase();
+        const nextVal = (i + 1 < cells.length) ? (cellVal(cells[i + 1]) + "").replace(/\s+/g, " ").trim() : "";
+
         if (!updateTgl && sl.includes("update data")) {
-          updateTgl = s.split(":").slice(1).join(":").replace(/\s+/g, " ").trim();
+          const afterColon = s.includes(":") ? s.split(":").slice(1).join(":").replace(/\s+/g, " ").trim() : "";
+          updateTgl = afterColon || nextVal;
         }
         if (!updatePukul && sl.includes("pukul")) {
-          updatePukul = s.split(":").slice(1).join(":").replace(/\s+/g, " ").trim();
+          const afterColon = s.includes(":") ? s.split(":").slice(1).join(":").replace(/\s+/g, " ").trim() : "";
+          updatePukul = afterColon || nextVal;
         }
       }
     }
@@ -788,11 +877,13 @@ function showProdiView() {
 }
 
 function statusBadge(status) {
-  const s = (status || "").toLowerCase();
-  if (s === "sudah terinput") return '<span class="badge sudah">Sudah Terinput</span>';
-  if (s === "belum terinput") return '<span class="badge belum">Belum Terinput</span>';
-  if (s === "belum lengkap") return '<span class="badge tidak-lengkap">Belum Lengkap</span>';
-  return status ? `<span class="badge tidak-lengkap">${status}</span>` : "";
+  const key = normalizeStatusNilai(status);
+  const label = labelStatusNilai(status);
+  if (key === "sudah") return '<span class="badge sudah">Sudah Terinput</span>';
+  if (key === "belum") return '<span class="badge belum">Belum Terinput</span>';
+  if (key === "belumLengkap") return '<span class="badge tidak-lengkap">Belum Lengkap</span>';
+  if (key === "nilaiT") return '<span class="badge tidak-lengkap">Nilai T</span>';
+  return label ? `<span class="badge tidak-lengkap">${label}</span>` : "";
 }
 
 function checkMark(val) {
