@@ -472,6 +472,47 @@ function cellVal(cell) {
   return (cell.v !== undefined && cell.v !== null) ? cell.v : (cell.f || "");
 }
 
+// ============================================================
+// MEMISAHKAN NILAI SMSTR/KLS
+// Contoh: II/A -> Semester II, Kelas A
+//         II/B -> Semester II, Kelas B
+//         III/C -> Semester III, Kelas C
+// ============================================================
+function splitSemesterKelas(value) {
+  if (value === null || value === undefined || value === "") {
+    return { semester: "", kelas: "" };
+  }
+
+  const raw = String(value).trim();
+  const parts = raw.split("/");
+
+  if (parts.length >= 2) {
+    return {
+      semester: parts[0].trim(),
+      kelas: parts.slice(1).join("/").trim()
+    };
+  }
+
+  // Jika hanya berisi A/B/C/D, anggap sebagai kelas.
+  return { semester: "", kelas: raw };
+}
+
+// ============================================================
+// KODE SEMESTER AKADEMIK
+// 20231 = Ganjil
+// 20232 = Genap
+// 20233 = Antara
+// ============================================================
+function jenisSemesterAkademik(kode) {
+  if (kode === null || kode === undefined || kode === "") return "";
+  const value = String(kode).trim();
+  const suffix = value.slice(-1);
+  if (suffix === "1") return "Ganjil";
+  if (suffix === "2") return "Genap";
+  if (suffix === "3") return "Antara";
+  return "";
+}
+
 function normalizeStatusNilai(status) {
   const raw = (status || "")
     .toString()
@@ -583,8 +624,22 @@ async function fetchSheetTab(prodi) {
     const idxTgl     = findCol("tgl");
     const idxKode    = findCol("kode");
     const idxMatkul  = findCol("mata kuliah", "matkul");
+
+    // Kolom SMSTR/KLS berisi format seperti II/A, II/B, II/C.
+    // Nilainya akan dipisah saat ditampilkan menjadi Semester II dan Kelas A/B/C.
     const idxKelas   = findCol("smstr", "kls", "kelas");
-    const idxDosen   = findCol("tim dosen", "dosen");        // ambil dosen pertama yg ketemu
+
+    // Jika Sheet memiliki kolom kode semester akademik terpisah,
+    // dashboard juga membacanya: 20231=Ganjil, 20232=Genap, 20233=Antara.
+    const idxSemesterAkademik = findCol(
+      "semester akademik",
+      "kode semester",
+      "tahun akademik",
+      "thn akademik",
+      "periode"
+    );
+
+    const idxDosen   = findCol("tim dosen", "dosen");
     const idxStatus  = findCol("progres nilai");             // <- kunci: cari "Progres Nilai di SIGA"
 
     // KOLOM RAWAN: header kolom angka/boolean (Jumlah Peserta, Syncron) suka di-NULL
@@ -609,11 +664,22 @@ async function fetchSheetTab(prodi) {
       const c = r.c || [];
       const kode   = idxKode   >= 0 ? cellVal(c[idxKode])   : "";
       const matkul = idxMatkul >= 0 ? cellVal(c[idxMatkul]) : "";
-      const kelas  = idxKelas  >= 0 ? cellVal(c[idxKelas])  : "";
+      const kelasRaw = idxKelas >= 0 ? cellVal(c[idxKelas]) : "";
 
       const kodeClean = (kode + "").trim();
       const matkulClean = (matkul + "").trim();
-      const kelasClean = (kelas + "").trim();
+
+      // Pisahkan II/A menjadi Semester II dan Kelas A.
+      const pemisahan = splitSemesterKelas(kelasRaw);
+      const semesterTampil = pemisahan.semester;
+      const kelasClean = pemisahan.kelas;
+
+      // Kode semester akademik bersifat opsional.
+      // Jika ada kolom 20231/20232/20233 di Sheet, labelnya ikut disimpan.
+      const semesterAkademikKode = idxSemesterAkademik >= 0
+        ? String(cellVal(c[idxSemesterAkademik])).trim()
+        : "";
+      const semesterAkademik = jenisSemesterAkademik(semesterAkademikKode);
 
       // FIX penting:
       // Jangan hitung baris kosong/template/dropdown.
@@ -638,7 +704,15 @@ async function fetchSheetTab(prodi) {
         kode: kodeClean,
         matkul: matkulClean,
         prodi: prodi.nama,
+
+        // II/A -> semester II, kelas A
+        semester: semesterTampil,
         kelas: kelasClean,
+
+        // Opsional: 20231 -> Ganjil, 20232 -> Genap, 20233 -> Antara
+        semesterAkademikKode: semesterAkademikKode,
+        semesterAkademik: semesterAkademik,
+
         jumlahPeserta: idxPeserta >= 0 ? cellVal(c[idxPeserta]) : "",
         dosen: idxDosen >= 0 ? cellVal(c[idxDosen]) : "",
         statusNilai: statusRaw,
@@ -903,7 +977,10 @@ function renderDetailTable() {
     rows = rows.filter(r =>
       (r.matkul + "").toLowerCase().includes(search) ||
       (r.dosen + "").toLowerCase().includes(search) ||
-      (r.kode + "").toLowerCase().includes(search)
+      (r.kode + "").toLowerCase().includes(search) ||
+      (r.semester + "").toLowerCase().includes(search) ||
+      (r.kelas + "").toLowerCase().includes(search) ||
+      (r.semesterAkademik + "").toLowerCase().includes(search)
     );
   }
 
@@ -928,6 +1005,7 @@ function renderDetailTable() {
       <td>${r.tglUjian || "-"}</td>
       <td>${r.kode || "-"}</td>
       <td>${r.matkul || "-"}</td>
+      <td>${r.semester || "-"}</td>
       <td>${r.kelas || "-"}</td>
       <td>${(r.jumlahPeserta !== "" && r.jumlahPeserta != null) ? r.jumlahPeserta : "-"}</td>
       <td>${r.dosen || "-"}</td>
@@ -945,6 +1023,7 @@ function renderDetailTable() {
           <th onclick="sortBy('tglUjian')">Tgl Ujian</th>
           <th onclick="sortBy('kode')">Kode</th>
           <th onclick="sortBy('matkul')">Mata Kuliah</th>
+          <th onclick="sortBy('semester')">Semester</th>
           <th onclick="sortBy('kelas')">Kelas</th>
           <th onclick="sortBy('jumlahPeserta')">Peserta</th>
           <th onclick="sortBy('dosen')">Tim Dosen</th>
